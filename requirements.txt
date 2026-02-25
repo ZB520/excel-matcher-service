@@ -5,4 +5,3 @@ rapidfuzz>=3.8.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
-uvicorn source.app:app --host 0.0.0.0 --port 8080
