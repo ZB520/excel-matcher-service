@@ -1,10 +1,10 @@
-import base64
 from pathlib import Path
 import tempfile
+import uuid
 import zipfile
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, HttpUrl
 import httpx
 
@@ -15,6 +15,9 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE_DIR / "assets"
 NEW_TEMPLATE_PATH = TEMPLATE_DIR / "新表模板.xlsx"
 
+# 临时 zip 下载：token -> zip 字节，扣子用短链接代替超长 base64
+_download_cache: dict[str, bytes] = {}
+
 
 class MatchByUrlRequest(BaseModel):
     old_file: HttpUrl
@@ -23,7 +26,7 @@ class MatchByUrlRequest(BaseModel):
 
 class MatchByUrlResponse(BaseModel):
     status: str
-    report_url: str  # data:application/zip;base64,... 供扣子解析后作为文件使用
+    report_url: str  # 临时下载链接，例如 https://xxx.zeabur.app/download/abc123
 
 
 app = FastAPI(title="Excel 图书匹配服务")
@@ -173,11 +176,26 @@ async def match_excels(
     )
 
 
+@app.get("/download/{token}")
+async def download_report(token: str) -> Response:
+    """
+    根据 match_by_url 返回的临时 token 下载 zip，仅可下载一次。
+    """
+    zip_bytes = _download_cache.pop(token, None)
+    if zip_bytes is None:
+        raise HTTPException(status_code=404, detail="链接已失效或已下载过，请重新发起匹配。")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="match_results.zip"'},
+    )
+
+
 @app.post("/match_by_url")
-async def match_by_url(payload: MatchByUrlRequest) -> JSONResponse:
+async def match_by_url(request: Request, payload: MatchByUrlRequest) -> JSONResponse:
     """
     扣子等场景使用：传入两个 Excel 的下载 URL，由服务端拉取后再跑匹配。
-    返回 JSON（含 base64 zip），避免扣子把二进制当 JSON 解析报错。
+    返回 JSON，report_url 为临时下载链接（短链接，避免超长 base64 导致扣子报错）。
     """
     tmpdir = Path(tempfile.mkdtemp())
 
@@ -242,11 +260,13 @@ async def match_by_url(payload: MatchByUrlRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"打包结果文件失败: {exc}") from exc
 
-    # 返回 JSON，扣子才能正确解析；zip 以 data URL 形式放在 report_url 中
+    # 生成临时下载链接，避免在 JSON 里塞整段 base64 导致扣子报错或超长
     zip_bytes = zip_path.read_bytes()
-    b64 = base64.standard_b64encode(zip_bytes).decode("ascii")
-    data_url = f"data:application/zip;base64,{b64}"
-    body = MatchByUrlResponse(status="ok", report_url=data_url)
+    token = uuid.uuid4().hex
+    _download_cache[token] = zip_bytes
+    base_url = str(request.base_url).rstrip("/")
+    report_url = f"{base_url}/download/{token}"
+    body = MatchByUrlResponse(status="ok", report_url=report_url)
     return JSONResponse(content=body.model_dump())
 
 
