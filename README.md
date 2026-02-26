@@ -17,7 +17,11 @@ uvicorn source.app:app --host 0.0.0.0 --port 8000
 - 打开浏览器访问：
   - 本机：`http://127.0.0.1:8000/`
 
-上传“旧表”和“新表” Excel 后，会下载一个 `match_results.zip`，里面包含三张结果表。
+上传“旧表”和“新表” Excel 后，会下载一个 `match_results.zip`，里面包含三张结果表：
+
+- `已匹配数据表.xlsx`
+- `未匹配数据表.xlsx`
+- `已匹配数据原始表.xlsx`
 
 ## 2. 在 Zeabur 上部署步骤
 

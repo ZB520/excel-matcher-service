@@ -417,9 +417,9 @@ def write_log(
     lines.append(f"匹配成功的书名数量: {len(matched_titles)}")
     lines.append(f"数量不一致（冲突）的书名数量: {len(conflict_titles)}")
     lines.append(f"仅出现在新表中的书名数量: {len(new_only_titles)}")
-    lines.append(f"匹配明细输出文件: {matched_path}")
-    lines.append(f"未匹配输出文件: {unmatched_path}")
-    lines.append(f"匹配原始表输出文件: {matched_original_path}")
+    lines.append(f"已匹配数据表输出文件: {matched_path}")
+    lines.append(f"未匹配数据表输出文件: {unmatched_path}")
+    lines.append(f"已匹配数据原始表输出文件: {matched_original_path}")
 
     log_text = "\n".join(lines)
 
