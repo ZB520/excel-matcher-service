@@ -4,6 +4,8 @@ import zipfile
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel, HttpUrl
+import httpx
 
 import excel_book_matcher
 
@@ -11,6 +13,12 @@ import excel_book_matcher
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE_DIR / "assets"
 NEW_TEMPLATE_PATH = TEMPLATE_DIR / "新表模板.xlsx"
+
+
+class MatchByUrlRequest(BaseModel):
+    old_file: HttpUrl
+    new_file: HttpUrl
+
 
 app = FastAPI(title="Excel 图书匹配服务")
 
@@ -143,6 +151,64 @@ async def match_excels(
         raise HTTPException(status_code=500, detail=f"处理 Excel 时出错: {exc}") from exc
 
     # 打包为 zip 返回
+    zip_path = tmpdir / "match_results.zip"
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(matched_path, arcname=matched_path.name)
+            zf.write(unmatched_path, arcname=unmatched_path.name)
+            zf.write(matched_original_path, arcname=matched_original_path.name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"打包结果文件失败: {exc}") from exc
+
+    return FileResponse(
+        path=zip_path,
+        media_type="application/zip",
+        filename="match_results.zip",
+    )
+
+
+@app.post("/match_by_url")
+async def match_by_url(payload: MatchByUrlRequest) -> FileResponse:
+    """
+    扣子等场景使用：传入两个 Excel 的下载 URL，由服务端拉取后再跑匹配。
+    """
+    tmpdir = Path(tempfile.mkdtemp())
+
+    old_path = tmpdir / "old.xlsx"
+    new_path = tmpdir / "new.xlsx"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            old_resp = await client.get(str(payload.old_file))
+            old_resp.raise_for_status()
+            new_resp = await client.get(str(payload.new_file))
+            new_resp.raise_for_status()
+
+        old_path.write_bytes(old_resp.content)
+        new_path.write_bytes(new_resp.content)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"下载 Excel 文件失败: {exc}") from exc
+
+    matched_path = tmpdir / "已匹配数据表.xlsx"
+    unmatched_path = tmpdir / "未匹配数据表.xlsx"
+    matched_original_path = tmpdir / "已匹配数据原始表.xlsx"
+
+    try:
+        excel_book_matcher.run_matching(
+            old_path=old_path,
+            new_path=new_path,
+            matched_path=matched_path,
+            unmatched_path=unmatched_path,
+            matched_original_path=matched_original_path,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=f"读取文件失败，请检查格式: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        print("UNEXPECTED_ERROR_IN_MATCH_BY_URL:", repr(exc))
+        raise HTTPException(status_code=500, detail=f"处理 Excel 时出错: {exc}") from exc
+
     zip_path = tmpdir / "match_results.zip"
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
