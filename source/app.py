@@ -8,6 +8,10 @@ from fastapi.responses import FileResponse, HTMLResponse
 import excel_book_matcher
 
 
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATE_DIR = BASE_DIR / "assets"
+NEW_TEMPLATE_PATH = TEMPLATE_DIR / "新表模板.xlsx"
+
 app = FastAPI(title="Excel 图书匹配服务")
 
 
@@ -37,12 +41,29 @@ async def index() -> str:
         }
         button:hover { background-color: #1d4ed8; }
         .hint { font-size: 0.9rem; color: #4b5563; }
+        .template-link {
+            display: inline-block;
+            margin-top: 0.75rem;
+            font-size: 0.9rem;
+        }
+        .template-link a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+        .template-link a:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
     <h1>Excel 图书匹配工具</h1>
     <p class="hint">
         选择一份旧表和一份新表，点击“开始匹配”后，系统会自动生成结果压缩包（包含匹配明细、未匹配表、匹配原始表）。
+    </p>
+    <p class="template-link">
+        不确定新表格式？可以先
+        <a href="/template/new" download>下载新表模板</a>
+        查看或填写。
     </p>
     <form action="/match" method="post" enctype="multipart/form-data">
         <div>
@@ -58,6 +79,21 @@ async def index() -> str:
 </body>
 </html>
     """
+
+
+@app.get("/template/new")
+async def download_new_template() -> FileResponse:
+    """
+    下载新表 Excel 模板，供用户了解并填写新表结构。
+    """
+    if not NEW_TEMPLATE_PATH.exists():
+        raise HTTPException(status_code=404, detail="新表模板文件不存在，请联系管理员上传。")
+
+    return FileResponse(
+        path=NEW_TEMPLATE_PATH,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="新表模板.xlsx",
+    )
 
 
 @app.post("/match")
@@ -85,10 +121,10 @@ async def match_excels(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"保存上传文件失败: {exc}") from exc
 
-    # 结果文件路径
-    matched_path = tmpdir / "matched_details.xlsx"
-    unmatched_path = tmpdir / "unmatched_items.xlsx"
-    matched_original_path = tmpdir / "matched_original_raw.xlsx"
+    # 结果文件路径（中文文件名）
+    matched_path = tmpdir / "已匹配数据表.xlsx"
+    unmatched_path = tmpdir / "未匹配数据表.xlsx"
+    matched_original_path = tmpdir / "已匹配数据原始表.xlsx"
 
     try:
         excel_book_matcher.run_matching(
