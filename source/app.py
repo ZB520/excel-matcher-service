@@ -177,8 +177,18 @@ async def match_by_url(payload: MatchByUrlRequest) -> FileResponse:
     old_path = tmpdir / "old.xlsx"
     new_path = tmpdir / "new.xlsx"
 
+    # 扣子等 CDN 可能要求浏览器式请求头才允许下载
+    download_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/octet-stream,*/*",
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=True,
+            headers=download_headers,
+        ) as client:
             old_resp = await client.get(str(payload.old_file))
             old_resp.raise_for_status()
             new_resp = await client.get(str(payload.new_file))
@@ -186,8 +196,15 @@ async def match_by_url(payload: MatchByUrlRequest) -> FileResponse:
 
         old_path.write_bytes(old_resp.content)
         new_path.write_bytes(new_resp.content)
+    except httpx.HTTPStatusError as exc:
+        msg = f"下载 Excel 失败: HTTP {exc.response.status_code}"
+        if exc.response.text:
+            msg += f" - {exc.response.text[:200]}"
+        raise HTTPException(status_code=400, detail=msg) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=400, detail=f"下载 Excel 请求失败: {exc!s}") from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"下载 Excel 文件失败: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"下载 Excel 文件失败: {exc!s}") from exc
 
     matched_path = tmpdir / "已匹配数据表.xlsx"
     unmatched_path = tmpdir / "未匹配数据表.xlsx"
