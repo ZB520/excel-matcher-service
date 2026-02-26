@@ -1,9 +1,10 @@
+import base64
 from pathlib import Path
 import tempfile
 import zipfile
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, HttpUrl
 import httpx
 
@@ -18,6 +19,11 @@ NEW_TEMPLATE_PATH = TEMPLATE_DIR / "新表模板.xlsx"
 class MatchByUrlRequest(BaseModel):
     old_file: HttpUrl
     new_file: HttpUrl
+
+
+class MatchByUrlResponse(BaseModel):
+    status: str
+    report_url: str  # data:application/zip;base64,... 供扣子解析后作为文件使用
 
 
 app = FastAPI(title="Excel 图书匹配服务")
@@ -168,9 +174,10 @@ async def match_excels(
 
 
 @app.post("/match_by_url")
-async def match_by_url(payload: MatchByUrlRequest) -> FileResponse:
+async def match_by_url(payload: MatchByUrlRequest) -> JSONResponse:
     """
     扣子等场景使用：传入两个 Excel 的下载 URL，由服务端拉取后再跑匹配。
+    返回 JSON（含 base64 zip），避免扣子把二进制当 JSON 解析报错。
     """
     tmpdir = Path(tempfile.mkdtemp())
 
@@ -235,11 +242,12 @@ async def match_by_url(payload: MatchByUrlRequest) -> FileResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"打包结果文件失败: {exc}") from exc
 
-    return FileResponse(
-        path=zip_path,
-        media_type="application/zip",
-        filename="match_results.zip",
-    )
+    # 返回 JSON，扣子才能正确解析；zip 以 data URL 形式放在 report_url 中
+    zip_bytes = zip_path.read_bytes()
+    b64 = base64.standard_b64encode(zip_bytes).decode("ascii")
+    data_url = f"data:application/zip;base64,{b64}"
+    body = MatchByUrlResponse(status="ok", report_url=data_url)
+    return JSONResponse(content=body.model_dump())
 
 
 @app.get("/health")
