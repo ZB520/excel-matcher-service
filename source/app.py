@@ -3,6 +3,7 @@ import os
 import tempfile
 import uuid
 import zipfile
+import json
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form
@@ -509,35 +510,45 @@ async def download_results_page(person: str | None = None) -> str:
         raise HTTPException(status_code=500, detail=f"连接 OSS 失败: {exc}") from exc
     
     # 列举该用户的所有结果目录
+    # 这里通过查找所有 DONE.json 来确定有哪些任务，而不是依赖 OSS 的“子目录”特性，
+    # 兼容不同版本 SDK / 控制台的行为。
     results_prefix = f"results/{person}/"
-    tasks = []
-    
+    tasks: list[dict[str, str]] = []
+
     try:
-        # 列举所有子目录（task_id）
-        task_dirs = set()
-        for obj in oss2.ObjectIterator(bucket, prefix=results_prefix, delimiter='/'):
-            if obj.is_prefix():
-                # 提取 task_id
-                task_id = obj.key.rstrip('/').split('/')[-1]
-                task_dirs.add(task_id)
-        
+        task_dirs: set[str] = set()
+
+        # 先找到所有 DONE.json，提取出 task_id
+        for obj in oss2.ObjectIterator(bucket, prefix=results_prefix):
+            key = obj.key
+            if not key.endswith("DONE.json"):
+                continue
+            # 形如 results/张/东阳技校/DONE.json -> 取中间的“东阳技校”
+            relative = key[len(results_prefix) :]
+            parts = relative.split("/", 1)
+            if not parts or not parts[0]:
+                continue
+            task_dirs.add(parts[0])
+
         # 对每个 task_id，读取 DONE.json 并生成下载链接
         for task_id in sorted(task_dirs, reverse=True):  # 最新的在前
             done_key = f"{results_prefix}{task_id}/DONE.json"
             try:
                 done_obj = bucket.get_object(done_key)
-                done_data = json.loads(done_obj.read().decode('utf-8'))
-                
+                done_data = json.loads(done_obj.read().decode("utf-8"))
+
                 # 生成 zip 文件的临时签名 URL（1小时有效期）
                 zip_key = f"{results_prefix}{task_id}/match_results_{task_id}.zip"
-                download_url = bucket.sign_url('GET', zip_key, 3600)
-                
-                tasks.append({
-                    "task_id": task_id,
-                    "school": done_data.get("school", "未知"),
-                    "time": done_data.get("time", "未知"),
-                    "download_url": download_url,
-                })
+                download_url = bucket.sign_url("GET", zip_key, 3600)
+
+                tasks.append(
+                    {
+                        "task_id": task_id,
+                        "school": done_data.get("school", "未知"),
+                        "time": done_data.get("time", "未知"),
+                        "download_url": download_url,
+                    }
+                )
             except Exception:
                 # 如果没有 DONE.json 或读取失败，跳过该任务
                 continue
