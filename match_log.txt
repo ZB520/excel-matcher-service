@@ -1,0 +1,11 @@
+旧表路径: C:\Users\ZB\AppData\Local\Temp\tmp67sjplr3\石夫人北区.xlsx
+新表路径: C:\Users\ZB\AppData\Local\Temp\tmp67sjplr3\新信息石夫人北.xlsx
+旧表总行数: 201
+新表总行数: 12
+书名相似度阈值: 75
+匹配成功的书名数量: 12
+数量不一致（冲突）的书名数量: 0
+仅出现在新表中的书名数量: 0
+匹配明细输出文件: C:\Users\ZB\AppData\Local\Temp\tmp67sjplr3\matched_details.xlsx
+未匹配输出文件: C:\Users\ZB\AppData\Local\Temp\tmp67sjplr3\unmatched_items.xlsx
+匹配原始表输出文件: C:\Users\ZB\AppData\Local\Temp\tmp67sjplr3\matched_original_raw.xlsx
