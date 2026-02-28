@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 import httpx
 
@@ -34,6 +35,10 @@ class MatchByUrlResponse(BaseModel):
 
 app = FastAPI(title="Excel 图书匹配服务")
 
+# Serve shared UI assets (CSS, etc.)
+STATIC_DIR = BASE_DIR / "static"
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
@@ -43,67 +48,72 @@ async def index() -> str:
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Excel 图书匹配工具</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; }
-        h1 { margin-bottom: 0.5rem; }
-        form { margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem; max-width: 480px; }
-        label { font-weight: 600; }
-        input[type="file"] { padding: 0.25rem 0; }
-        button {
-            padding: 0.6rem 1.2rem;
-            border-radius: 4px;
-            border: none;
-            background-color: #2563eb;
-            color: white;
-            font-size: 1rem;
-            cursor: pointer;
-        }
-        button:hover { background-color: #1d4ed8; }
-        .hint { font-size: 0.9rem; color: #4b5563; }
-        .template-link {
-            display: inline-block;
-            margin-top: 0.75rem;
-            font-size: 0.9rem;
-        }
-        .template-link a {
-            color: #2563eb;
-            text-decoration: none;
-        }
-        .template-link a:hover {
-            text-decoration: underline;
-        }
-        nav { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
-        nav a { margin-right: 1rem; color: #2563eb; text-decoration: none; }
-        nav a:hover { text-decoration: underline; }
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-    <nav>
-        <a href="/">单次匹配</a>
-        <a href="/upload_to_oss">批量上传到 OSS</a>
-        <a href="/download_results">下载处理结果</a>
-    </nav>
-    <h1>Excel 图书匹配工具</h1>
-    <p class="hint">
-        选择一份旧表和一份新表，点击“开始匹配”后，系统会自动生成结果压缩包（包含匹配明细、未匹配表、匹配原始表）。
-    </p>
-    <p class="template-link">
-        不确定新表格式？可以先
-        <a href="/template/new" download>下载新表模板</a>
-        查看或填写。
-    </p>
-    <form action="/match" method="post" enctype="multipart/form-data">
-        <div>
-            <label for="old_file">旧表 Excel：</label><br />
-            <input type="file" id="old_file" name="old_file" accept=".xlsx,.xls" required />
+    <div class="container">
+        <header class="topbar">
+            <div class="brand">
+                <div class="logo" aria-hidden="true"></div>
+                <div>
+                    <div class="brand-title">Excel 图书匹配工具</div>
+                    <div class="brand-sub">上传新旧表，自动生成匹配结果 ZIP</div>
+                </div>
+            </div>
+            <nav class="nav" aria-label="导航">
+                <a href="/" aria-current="page">单次匹配</a>
+                <a href="/upload_to_oss">批量上传到 OSS</a>
+                <a href="/download_results">下载处理结果</a>
+            </nav>
+        </header>
+
+        <section class="hero">
+            <h1>单次匹配</h1>
+            <p>
+                选择一份旧表和一份新表，点击“开始匹配”后会自动下载结果压缩包（包含匹配明细、未匹配表、匹配原始表）。
+            </p>
+        </section>
+
+        <div class="grid">
+            <section class="card">
+                <div class="card-body">
+                    <div class="card-title">上传文件</div>
+                    <form class="form" action="/match" method="post" enctype="multipart/form-data">
+                        <div class="field">
+                            <label class="label" for="old_file">旧表 Excel</label>
+                            <input class="control" type="file" id="old_file" name="old_file" accept=".xlsx,.xls" required />
+                        </div>
+                        <div class="field">
+                            <label class="label" for="new_file">新表 Excel</label>
+                            <input class="control" type="file" id="new_file" name="new_file" accept=".xlsx,.xls" required />
+                        </div>
+                        <div class="actions">
+                            <button class="btn primary" type="submit">开始匹配并下载结果</button>
+                            <a class="btn link" href="/template/new" download>下载新表模板</a>
+                        </div>
+                        <div class="small muted">支持格式：.xlsx / .xls。处理在服务器端完成。</div>
+                    </form>
+                </div>
+            </section>
+
+            <aside class="card">
+                <div class="card-body">
+                    <div class="card-title">使用小贴士</div>
+                    <div class="callout">
+                        <strong>新表格式不确定？</strong> 先下载模板查看列结构，再按模板填写即可。
+                        <ul>
+                            <li>匹配结果会以 ZIP 形式下载</li>
+                            <li>ZIP 中包含 3 张 Excel 结果表</li>
+                            <li>遇到报错通常是列名/格式不符合</li>
+                        </ul>
+                    </div>
+                    <div class="footer">如需批量处理，请使用“批量上传到 OSS”。</div>
+                </div>
+            </aside>
         </div>
-        <div>
-            <label for="new_file">新表 Excel：</label><br />
-            <input type="file" id="new_file" name="new_file" accept=".xlsx,.xls" required />
-        </div>
-        <button type="submit">开始匹配并下载结果</button>
-    </form>
+    </div>
 </body>
 </html>
     """
@@ -289,71 +299,82 @@ async def upload_to_oss_page() -> str:
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>批量上传到 OSS</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; }
-        h1 { margin-bottom: 0.5rem; color: #1f2937; }
-        .hint { font-size: 0.9rem; color: #4b5563; margin-bottom: 1.5rem; line-height: 1.6; }
-        form { display: flex; flex-direction: column; gap: 1.2rem; max-width: 600px; }
-        label { font-weight: 600; color: #374151; }
-        select, input[type="file"] { padding: 0.5rem; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 4px; }
-        button {
-            padding: 0.8rem 1.5rem;
-            border-radius: 6px;
-            border: none;
-            background-color: #10b981;
-            color: white;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        button:hover { background-color: #059669; }
-        .warning { background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 1rem; margin-top: 1rem; }
-        .warning strong { color: #92400e; }
-        nav { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
-        nav a { margin-right: 1rem; color: #2563eb; text-decoration: none; }
-        nav a:hover { text-decoration: underline; }
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-    <nav>
-        <a href="/">单次匹配</a>
-        <a href="/upload_to_oss">批量上传到 OSS</a>
-        <a href="/download_results">下载处理结果</a>
-    </nav>
-    <h1>批量上传 Excel 到阿里云 OSS</h1>
-    <p class="hint">
-        选择您的姓名，然后一次性上传多个 Excel 文件。<br>
-        <strong>重要提示：</strong>文件名必须包含"新表"或"旧表"关键字，系统会自动识别并分组。<br>
-        例如：<code>玉环新表2025.xlsx</code>、<code>玉环旧表.xlsx</code>、<code>石夫人新表2025秋.xlsx</code> 等。
-    </p>
-    <form action="/upload_to_oss" method="post" enctype="multipart/form-data">
-        <div>
-            <label for="person">选择您的姓名：</label>
-            <select id="person" name="person" required>
-                <option value="">-- 请选择 --</option>
-                <option value="张">张（管理员）</option>
-                <option value="徐">徐</option>
-                <option value="章">章</option>
-                <option value="李">李</option>
-                <option value="姜">姜（备用）</option>
-            </select>
+    <div class="container">
+        <header class="topbar">
+            <div class="brand">
+                <div class="logo" aria-hidden="true"></div>
+                <div>
+                    <div class="brand-title">Excel 图书匹配工具</div>
+                    <div class="brand-sub">批量上传到 OSS，自动分组处理</div>
+                </div>
+            </div>
+            <nav class="nav" aria-label="导航">
+                <a href="/">单次匹配</a>
+                <a href="/upload_to_oss" aria-current="page">批量上传到 OSS</a>
+                <a href="/download_results">下载处理结果</a>
+            </nav>
+        </header>
+
+        <section class="hero">
+            <h1>批量上传到 OSS</h1>
+            <p>
+                选择您的姓名，然后一次性上传多个 Excel 文件。系统会根据文件名中的“新表/旧表”自动识别并分组处理。
+            </p>
+        </section>
+
+        <div class="grid">
+            <section class="card">
+                <div class="card-body">
+                    <div class="card-title">上传文件</div>
+                    <form class="form" action="/upload_to_oss" method="post" enctype="multipart/form-data">
+                        <div class="field">
+                            <label class="label" for="person">选择您的姓名</label>
+                            <select class="control" id="person" name="person" required>
+                                <option value="">-- 请选择 --</option>
+                                <option value="张">张（管理员）</option>
+                                <option value="徐">徐</option>
+                                <option value="章">章</option>
+                                <option value="李">李</option>
+                                <option value="姜">姜（备用）</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label class="label" for="files">选择 Excel 文件（可多选）</label>
+                            <input class="control" type="file" id="files" name="files" accept=".xlsx,.xls" multiple required />
+                        </div>
+                        <div class="actions">
+                            <button class="btn success" type="submit">上传到 OSS</button>
+                            <a class="btn link" href="/download_results">我已上传，去下载结果</a>
+                        </div>
+                        <div class="small muted">上传完成后会在后台自动处理，通常 1 分钟内生成结果。</div>
+                    </form>
+                </div>
+            </section>
+
+            <aside class="card">
+                <div class="card-body">
+                    <div class="card-title">文件命名规则</div>
+                    <div class="callout">
+                        <strong>务必包含关键字</strong>
+                        <ul>
+                            <li>新表文件名必须包含“新表”</li>
+                            <li>旧表文件名必须包含“旧表”</li>
+                            <li>“新表/旧表”前面的部分作为学校简称（如“玉环”“石夫人”）</li>
+                            <li>同一学校的新表和旧表会自动配对处理</li>
+                        </ul>
+                        <div class="small muted" style="margin-top:8px;">
+                            示例：<span class="mono">玉环新表2025.xlsx</span>、<span class="mono">玉环旧表.xlsx</span>
+                        </div>
+                    </div>
+                    <div class="footer">如果页面提示 OSS 配置缺失，请联系管理员设置环境变量。</div>
+                </div>
+            </aside>
         </div>
-        <div>
-            <label for="files">选择 Excel 文件（可多选）：</label>
-            <input type="file" id="files" name="files" accept=".xlsx,.xls" multiple required />
-        </div>
-        <button type="submit">上传到 OSS</button>
-    </form>
-    <div class="warning">
-        <strong>文件命名规则：</strong>
-        <ul style="margin: 0.5rem 0 0 1.5rem;">
-            <li>新表文件名必须包含"新表"二字</li>
-            <li>旧表文件名必须包含"旧表"二字</li>
-            <li>"新表"/"旧表"前面的部分作为学校简称（如"玉环"、"石夫人"）</li>
-            <li>同一学校的新表和旧表会自动配对处理</li>
-        </ul>
     </div>
 </body>
 </html>
@@ -439,55 +460,70 @@ async def download_results_page(person: str | None = None) -> str:
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>下载处理结果</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; }
-        h1 { margin-bottom: 0.5rem; color: #1f2937; }
-        .hint { font-size: 0.9rem; color: #4b5563; margin-bottom: 1.5rem; line-height: 1.6; }
-        form { display: flex; flex-direction: column; gap: 1.2rem; max-width: 600px; }
-        label { font-weight: 600; color: #374151; }
-        select { padding: 0.5rem; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 4px; }
-        button {
-            padding: 0.8rem 1.5rem;
-            border-radius: 6px;
-            border: none;
-            background-color: #3b82f6;
-            color: white;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        button:hover { background-color: #2563eb; }
-        nav { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
-        nav a { margin-right: 1rem; color: #2563eb; text-decoration: none; }
-        nav a:hover { text-decoration: underline; }
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-    <nav>
-        <a href="/">单次匹配</a>
-        <a href="/upload_to_oss">批量上传到 OSS</a>
-        <a href="/download_results">下载处理结果</a>
-    </nav>
-    <h1>下载处理结果</h1>
-    <p class="hint">
-        选择您的姓名，查看并下载所有已完成的数据处理结果。
-    </p>
-    <form action="/download_results" method="get">
-        <div>
-            <label for="person">选择您的姓名：</label>
-            <select id="person" name="person" required>
-                <option value="">-- 请选择 --</option>
-                <option value="张">张（管理员）</option>
-                <option value="徐">徐</option>
-                <option value="章">章</option>
-                <option value="李">李</option>
-                <option value="姜">姜（备用）</option>
-            </select>
+    <div class="container">
+        <header class="topbar">
+            <div class="brand">
+                <div class="logo" aria-hidden="true"></div>
+                <div>
+                    <div class="brand-title">Excel 图书匹配工具</div>
+                    <div class="brand-sub">查看并下载已完成结果</div>
+                </div>
+            </div>
+            <nav class="nav" aria-label="导航">
+                <a href="/">单次匹配</a>
+                <a href="/upload_to_oss">批量上传到 OSS</a>
+                <a href="/download_results" aria-current="page">下载处理结果</a>
+            </nav>
+        </header>
+
+        <section class="hero">
+            <h1>下载处理结果</h1>
+            <p>选择您的姓名，查看并下载所有已完成的数据处理结果（下载链接默认 1 小时有效）。</p>
+        </section>
+
+        <div class="grid">
+            <section class="card">
+                <div class="card-body">
+                    <div class="card-title">选择姓名</div>
+                    <form class="form" action="/download_results" method="get">
+                        <div class="field">
+                            <label class="label" for="person">您的姓名</label>
+                            <select class="control" id="person" name="person" required>
+                                <option value="">-- 请选择 --</option>
+                                <option value="张">张（管理员）</option>
+                                <option value="徐">徐</option>
+                                <option value="章">章</option>
+                                <option value="李">李</option>
+                                <option value="姜">姜（备用）</option>
+                            </select>
+                        </div>
+                        <div class="actions">
+                            <button class="btn primary" type="submit">查看我的结果</button>
+                            <a class="btn link" href="/upload_to_oss">去上传文件</a>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <aside class="card">
+                <div class="card-body">
+                    <div class="card-title">说明</div>
+                    <div class="callout">
+                        <strong>下载链接有效期</strong>
+                        <ul>
+                            <li>链接默认 1 小时有效，过期刷新页面可重新生成</li>
+                            <li>如果没有结果，请先去“批量上传到 OSS”上传文件</li>
+                        </ul>
+                    </div>
+                </div>
+            </aside>
         </div>
-        <button type="submit">查看我的结果</button>
-    </form>
+    </div>
 </body>
 </html>
         """
@@ -559,16 +595,16 @@ async def download_results_page(person: str | None = None) -> str:
     
     # 生成 HTML 页面显示结果列表
     if not tasks:
-        tasks_html = '<p style="color: #6b7280;">暂无处理结果，请先上传文件进行处理。</p>'
+        tasks_html = '<p class="muted">暂无处理结果，请先上传文件进行处理。</p>'
     else:
-        tasks_html = '<table style="width: 100%; border-collapse: collapse;">'
+        tasks_html = '<table class="table">'
         tasks_html += '''
             <thead>
-                <tr style="background-color: #f3f4f6; border-bottom: 2px solid #e5e7eb;">
-                    <th style="padding: 0.75rem; text-align: left;">学校</th>
-                    <th style="padding: 0.75rem; text-align: left;">任务ID</th>
-                    <th style="padding: 0.75rem; text-align: left;">处理时间</th>
-                    <th style="padding: 0.75rem; text-align: center;">操作</th>
+                <tr>
+                    <th>学校</th>
+                    <th>任务ID</th>
+                    <th>处理时间</th>
+                    <th class="center">操作</th>
                 </tr>
             </thead>
             <tbody>
@@ -576,16 +612,12 @@ async def download_results_page(person: str | None = None) -> str:
         for task in tasks:
             time_str = task["time"].split('T')[0] if 'T' in task["time"] else task["time"]
             tasks_html += f'''
-                <tr style="border-bottom: 1px solid #e5e7eb;">
-                    <td style="padding: 0.75rem;">{task["school"]}</td>
-                    <td style="padding: 0.75rem; font-family: monospace; font-size: 0.9rem;">{task["task_id"]}</td>
-                    <td style="padding: 0.75rem;">{time_str}</td>
-                    <td style="padding: 0.75rem; text-align: center;">
-                        <a href="{task["download_url"]}" 
-                           style="background-color: #10b981; color: white; padding: 0.5rem 1rem; 
-                                  border-radius: 4px; text-decoration: none; font-size: 0.9rem;">
-                            下载结果
-                        </a>
+                <tr>
+                    <td>{task["school"]}</td>
+                    <td class="mono">{task["task_id"]}</td>
+                    <td>{time_str}</td>
+                    <td class="center">
+                        <a class="btn success link" href="{task["download_url"]}">下载结果</a>
                     </td>
                 </tr>
             '''
@@ -596,32 +628,47 @@ async def download_results_page(person: str | None = None) -> str:
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{person} 的处理结果</title>
-    <style>
-        body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; }}
-        h1 {{ margin-bottom: 0.5rem; color: #1f2937; }}
-        .hint {{ font-size: 0.9rem; color: #4b5563; margin-bottom: 1.5rem; line-height: 1.6; }}
-        .back-link {{ display: inline-block; margin-bottom: 1.5rem; color: #2563eb; text-decoration: none; }}
-        .back-link:hover {{ text-decoration: underline; }}
-        table {{ margin-top: 1rem; }}
-        nav {{ margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }}
-        nav a {{ margin-right: 1rem; color: #2563eb; text-decoration: none; }}
-        nav a:hover {{ text-decoration: underline; }}
-    </style>
+    <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-    <nav>
-        <a href="/">单次匹配</a>
-        <a href="/upload_to_oss">批量上传到 OSS</a>
-        <a href="/download_results">下载处理结果</a>
-    </nav>
-    <a href="/download_results" class="back-link">← 返回选择页面</a>
-    <h1>{person} 的处理结果</h1>
-    <p class="hint">
-        以下是您所有已完成的数据处理结果。点击"下载结果"按钮即可下载对应的 ZIP 文件（包含匹配明细、未匹配表、匹配原始表）。<br>
-        <strong>注意：</strong>下载链接有效期为 1 小时，过期后请刷新页面重新生成。
-    </p>
-    {tasks_html}
+    <div class="container">
+        <header class="topbar">
+            <div class="brand">
+                <div class="logo" aria-hidden="true"></div>
+                <div>
+                    <div class="brand-title">Excel 图书匹配工具</div>
+                    <div class="brand-sub">{person} 的处理结果</div>
+                </div>
+            </div>
+            <nav class="nav" aria-label="导航">
+                <a href="/">单次匹配</a>
+                <a href="/upload_to_oss">批量上传到 OSS</a>
+                <a href="/download_results" aria-current="page">下载处理结果</a>
+            </nav>
+        </header>
+
+        <section class="hero">
+            <h1>{person} 的处理结果</h1>
+            <p>
+                点击“下载结果”即可下载对应 ZIP（含匹配明细、未匹配表、匹配原始表）。下载链接有效期为 1 小时，过期后刷新页面即可重新生成。
+            </p>
+        </section>
+
+        <section class="card">
+            <div class="card-body">
+                <div class="actions" style="margin-top:0;">
+                    <a class="btn link" href="/download_results">← 返回选择页面</a>
+                </div>
+                <div style="margin-top:12px;">
+                    {tasks_html}
+                </div>
+            </div>
+        </section>
+
+        <div class="footer">提示：如果结果为空，请先确认是否已成功上传并完成处理。</div>
+    </div>
 </body>
 </html>
     """
