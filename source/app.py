@@ -1,13 +1,18 @@
 from pathlib import Path
+import base64
+import hashlib
+import hmac
 import os
 import tempfile
+import time
 import uuid
 import zipfile
 import json
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 import httpx
@@ -20,7 +25,128 @@ TEMPLATE_DIR = BASE_DIR / "assets"
 NEW_TEMPLATE_PATH = TEMPLATE_DIR / "新表模板.xlsx"
 
 # 临时 zip 下载：token -> zip 字节，扣子用短链接代替超长 base64
-_download_cache: dict[str, bytes] = {}
+_download_cache: Dict[str, bytes] = {}
+
+SESSION_COOKIE_NAME = "excel_matcher_session"
+SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60  # 30 天
+
+
+def _load_users_from_env() -> Dict[str, str]:
+    """
+    从环境变量 WEB_USERS 读取账号密码配置。
+
+    推荐格式：WEB_USERS="张:password1;徐:password2;章:password3"
+    """
+    raw = os.getenv("WEB_USERS") or ""
+    if not raw:
+        raise RuntimeError(
+            "环境变量 WEB_USERS 未配置。格式示例：WEB_USERS='张:password1;徐:password2'"
+        )
+
+    users: Dict[str, str] = {}
+    for chunk in raw.split(";"):
+        entry = chunk.strip()
+        if not entry or ":" not in entry:
+            continue
+        name, pwd = entry.split(":", 1)
+        name = name.strip()
+        pwd = pwd.strip()
+        if not name or not pwd:
+            continue
+        users[name] = pwd
+
+    if not users:
+        raise RuntimeError(
+            "WEB_USERS 未解析出任何有效账号，请使用 '姓名:密码;姓名2:密码2' 格式配置。"
+        )
+    return users
+
+
+SECRET_KEY = os.getenv("WEB_SECRET_KEY") or os.getenv("SECRET_KEY") or uuid.uuid4().hex
+_RAW_USERS = _load_users_from_env()
+
+
+def _hash_password(username: str, password: str) -> str:
+    data = f"{username}:{password}:{SECRET_KEY}".encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+USERS: Dict[str, str] = {name: _hash_password(name, pwd) for name, pwd in _RAW_USERS.items()}
+
+
+def _encode_session(payload: Dict[str, Any]) -> str:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    body_b64 = base64.urlsafe_b64encode(body).decode("ascii")
+    sig = hmac.new(SECRET_KEY.encode("utf-8"), body_b64.encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii")
+    return f"{body_b64}.{sig_b64}"
+
+
+def _decode_session(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        body_b64, sig_b64 = token.split(".", 1)
+        expected_sig = base64.urlsafe_b64encode(
+            hmac.new(SECRET_KEY.encode("utf-8"), body_b64.encode("ascii"), hashlib.sha256).digest()
+        ).decode("ascii")
+        if not hmac.compare_digest(sig_b64, expected_sig):
+            return None
+        body = base64.urlsafe_b64decode(body_b64.encode("ascii"))
+        data: Dict[str, Any] = json.loads(body.decode("utf-8"))
+        exp = data.get("exp")
+        if isinstance(exp, (int, float)) and exp < int(time.time()):
+            return None
+        return data
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def verify_password(username: str, password: str) -> bool:
+    stored = USERS.get(username)
+    if not stored:
+        return False
+    candidate = _hash_password(username, password)
+    return hmac.compare_digest(stored, candidate)
+
+
+def get_current_user(request: Request) -> Optional[str]:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    data = _decode_session(token)
+    if not data:
+        return None
+    username = data.get("u")
+    if not isinstance(username, str):
+        return None
+    if username not in USERS:
+        return None
+    return username
+
+
+def set_session_cookie(response: Response, username: str, remember_me: bool) -> None:
+    now = int(time.time())
+    payload: Dict[str, Any] = {"u": username}
+    if remember_me:
+        payload["exp"] = now + SESSION_MAX_AGE_SECONDS
+
+    token = _encode_session(payload)
+    secure_flag = (os.getenv("SESSION_COOKIE_SECURE") or "true").lower() == "true"
+
+    cookie_kwargs: Dict[str, Any] = {
+        "key": SESSION_COOKIE_NAME,
+        "value": token,
+        "httponly": True,
+        "samesite": "lax",
+        "path": "/",
+        "secure": secure_flag,
+    }
+    if remember_me:
+        cookie_kwargs["max_age"] = SESSION_MAX_AGE_SECONDS
+    response.set_cookie(**cookie_kwargs)
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
 
 
 class MatchByUrlRequest(BaseModel):
@@ -40,10 +166,119 @@ STATIC_DIR = BASE_DIR / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def _render_login_page(error: str = "", username: str = "") -> str:
+    error_html = ""
+    if error:
+        error_html = f"""
+            <div class="callout" style="border-color: rgba(248,113,113,.60); background: rgba(254,242,242,1); color: #b91c1c; margin-bottom: 12px;">
+                <strong>{error}</strong>
+            </div>
+        """
+    subtitle = f"{person} 的处理结果 · 当前登录：{username} 老师" if isinstance(username, str) else f"{person} 的处理结果"
+    return f"""
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 - Excel 图书匹配工具</title>
+    <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+    <div class="container">
+        <header class="topbar">
+            <div class="brand">
+                <div class="logo" aria-hidden="true"></div>
+                <div>
+                    <div class="brand-title">Excel 图书匹配工具</div>
+                    <div class="brand-sub">登录后才能上传和查看结果</div>
+                </div>
+            </div>
+        </header>
+
+        <section class="hero">
+            <h1>登录</h1>
+            <p>请输入分配给您的姓名和密码。如果在这台电脑上是您个人使用，可以勾选“记住我”。</p>
+        </section>
+
+        <section class="card">
+            <div class="card-body">
+                {error_html}
+                <div class="card-title">账号登录</div>
+                <form class="form" action="/login" method="post">
+                    <div class="field">
+                        <label class="label" for="username">姓名</label>
+                        <input class="control" type="text" id="username" name="username" required value="{username}" />
+                    </div>
+                    <div class="field">
+                        <label class="label" for="password">密码</label>
+                        <input class="control" type="password" id="password" name="password" required />
+                    </div>
+                    <div class="field" style="flex-direction: row; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="remember_me" name="remember_me" value="1" style="width:auto;" />
+                        <label class="label" for="remember_me" style="font-weight:500;">在这台电脑上记住我（30 天内免登录）</label>
+                    </div>
+                    <div class="actions">
+                        <button class="btn primary" type="submit">登录</button>
+                    </div>
+                    <div class="small muted">
+                        如需新增或修改账号，请联系管理员。
+                    </div>
+                </form>
+            </div>
+        </section>
+    </div>
+</body>
+</html>
+    """
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request) -> Response | str:
+    """登录页面。已登录用户自动跳转到首页。"""
+    username = get_current_user(request)
+    if username:
+        return RedirectResponse("/", status_code=302)
+    return _render_login_page()
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    remember_me: bool = Form(False),
+) -> Response | str:
+    current = get_current_user(request)
+    if current:
+        return RedirectResponse("/", status_code=302)
+
+    if not verify_password(username, password):
+        # 登录失败，返回带错误提示的页面（不设置 Cookie）
+        return HTMLResponse(_render_login_page("账号或密码不正确，请重试。", username=username), status_code=401)
+
+    response = RedirectResponse("/", status_code=302)
+    set_session_cookie(response, username, remember_me=remember_me)
+    return response
+
+
+@app.get("/logout")
+async def logout() -> Response:
+    """退出登录并清除会话。"""
+    response = RedirectResponse("/login", status_code=302)
+    clear_session_cookie(response)
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index() -> str:
+async def index(request: Request) -> Response | str:
     """简单上传页面，方便同事在浏览器里直接使用。"""
-    return """
+    username = get_current_user(request)
+    if not username:
+        return RedirectResponse("/login", status_code=302)
+
+    welcome = f"欢迎，{username} 老师" if isinstance(username, str) else "上传新旧表，自动生成匹配结果 ZIP"
+    return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -59,7 +294,7 @@ async def index() -> str:
                 <div class="logo" aria-hidden="true"></div>
                 <div>
                     <div class="brand-title">Excel 图书匹配工具</div>
-                    <div class="brand-sub">上传新旧表，自动生成匹配结果 ZIP</div>
+                    <div class="brand-sub">{welcome}</div>
                 </div>
             </div>
             <nav class="nav" aria-label="导航">
@@ -136,12 +371,15 @@ async def download_new_template() -> FileResponse:
 
 @app.post("/match")
 async def match_excels(
+    request: Request,
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
 ) -> FileResponse:
     """
     接收两份 Excel，调用 excel_book_matcher.run_matching，返回压缩包下载。
     """
+    if not get_current_user(request):
+        raise HTTPException(status_code=401, detail="未登录或登录已过期，请先登录后再上传。")
     if not old_file.filename or not new_file.filename:
         raise HTTPException(status_code=400, detail="请同时上传旧表和新表 Excel 文件。")
 
@@ -292,9 +530,14 @@ async def match_by_url(request: Request, payload: MatchByUrlRequest) -> JSONResp
 
 
 @app.get("/upload_to_oss", response_class=HTMLResponse)
-async def upload_to_oss_page() -> str:
+async def upload_to_oss_page(request: Request) -> Response | str:
     """批量上传页面，可一次性上传多个 Excel 到 OSS"""
-    return """
+    username = get_current_user(request)
+    if not username:
+        return RedirectResponse("/login", status_code=302)
+
+    subtitle = f"当前登录：{username} 老师" if isinstance(username, str) else "批量上传到 OSS，自动分组处理"
+    return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -310,7 +553,7 @@ async def upload_to_oss_page() -> str:
                 <div class="logo" aria-hidden="true"></div>
                 <div>
                     <div class="brand-title">Excel 图书匹配工具</div>
-                    <div class="brand-sub">批量上传到 OSS，自动分组处理</div>
+                    <div class="brand-sub">{subtitle}</div>
                 </div>
             </div>
             <nav class="nav" aria-label="导航">
@@ -383,10 +626,13 @@ async def upload_to_oss_page() -> str:
 
 @app.post("/upload_to_oss")
 async def upload_to_oss_handler(
+    request: Request,
     person: str = Form(...),
     files: list[UploadFile] = File(...),
 ) -> JSONResponse:
     """接收多个文件并上传到 OSS"""
+    if not get_current_user(request):
+        raise HTTPException(status_code=401, detail="未登录或登录已过期，请先登录后再上传。")
     if not person or not files:
         raise HTTPException(status_code=400, detail="请选择姓名并至少上传一个文件")
 
@@ -450,12 +696,16 @@ async def upload_to_oss_handler(
 
 
 @app.get("/download_results", response_class=HTMLResponse)
-async def download_results_page(person: str | None = None) -> str:
+async def download_results_page(request: Request, person: str | None = None) -> Response | str:
     """下载结果页面：选择用户或显示该用户的所有处理结果"""
-    
+    username = get_current_user(request)
+    if not username:
+        return RedirectResponse("/login", status_code=302)
+
     # 如果没有指定 person，显示选择页面
     if not person:
-        return """
+        subtitle = f"当前登录：{username} 老师" if isinstance(username, str) else "查看并下载已完成结果"
+        return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -471,7 +721,7 @@ async def download_results_page(person: str | None = None) -> str:
                 <div class="logo" aria-hidden="true"></div>
                 <div>
                     <div class="brand-title">Excel 图书匹配工具</div>
-                    <div class="brand-sub">查看并下载已完成结果</div>
+                    <div class="brand-sub">{subtitle}</div>
                 </div>
             </div>
             <nav class="nav" aria-label="导航">
@@ -639,7 +889,7 @@ async def download_results_page(person: str | None = None) -> str:
                 <div class="logo" aria-hidden="true"></div>
                 <div>
                     <div class="brand-title">Excel 图书匹配工具</div>
-                    <div class="brand-sub">{person} 的处理结果</div>
+                    <div class="brand-sub">{subtitle}</div>
                 </div>
             </div>
             <nav class="nav" aria-label="导航">
