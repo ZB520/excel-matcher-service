@@ -234,7 +234,7 @@ def _render_login_page(error: str = "", username: str = "") -> str:
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> Response | str:
+async def login_page(request: Request) -> Response:
     """登录页面。已登录用户自动跳转到首页。"""
     username = get_current_user(request)
     if username:
@@ -248,7 +248,7 @@ async def login_submit(
     username: str = Form(...),
     password: str = Form(...),
     remember_me: bool = Form(False),
-) -> Response | str:
+) -> Response:
     current = get_current_user(request)
     if current:
         return RedirectResponse("/", status_code=302)
@@ -271,7 +271,7 @@ async def logout() -> Response:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> Response | str:
+async def index(request: Request) -> Response:
     """简单上传页面，方便同事在浏览器里直接使用。"""
     username = get_current_user(request)
     if not username:
@@ -530,7 +530,7 @@ async def match_by_url(request: Request, payload: MatchByUrlRequest) -> JSONResp
 
 
 @app.get("/upload_to_oss", response_class=HTMLResponse)
-async def upload_to_oss_page(request: Request) -> Response | str:
+async def upload_to_oss_page(request: Request) -> Response:
     """批量上传页面，可一次性上传多个 Excel 到 OSS"""
     username = get_current_user(request)
     if not username:
@@ -696,7 +696,7 @@ async def upload_to_oss_handler(
 
 
 @app.get("/download_results", response_class=HTMLResponse)
-async def download_results_page(request: Request, person: str | None = None) -> Response | str:
+async def download_results_page(request: Request, person: str | None = None) -> Response:
     """下载结果页面：选择用户或显示该用户的所有处理结果"""
     username = get_current_user(request)
     if not username:
