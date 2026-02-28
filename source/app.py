@@ -174,7 +174,6 @@ def _render_login_page(error: str = "", username: str = "") -> str:
                 <strong>{error}</strong>
             </div>
         """
-    subtitle = f"{person} 的处理结果 · 当前登录：{username} 老师" if isinstance(username, str) else f"{person} 的处理结果"
     return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -872,7 +871,13 @@ async def download_results_page(request: Request, person: str | None = None) -> 
                 </tr>
             '''
         tasks_html += '</tbody></table>'
-    
+
+    subtitle = (
+        f"{person} 的处理结果 · 当前登录：{username} 老师"
+        if isinstance(username, str)
+        else f"{person} 的处理结果"
+    )
+
     return f"""
 <!DOCTYPE html>
 <html lang="zh-CN">
