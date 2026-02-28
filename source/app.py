@@ -337,6 +337,7 @@ async def upload_to_oss_page() -> str:
                 <option value="徐">徐</option>
                 <option value="章">章</option>
                 <option value="李">李</option>
+                <option value="姜">姜（备用）</option>
             </select>
         </div>
         <div>
@@ -422,7 +423,7 @@ async def upload_to_oss_handler(
         content={
             "status": "success",
             "uploaded": uploaded_files,
-            "message": f"成功上传 {len(uploaded_files)} 个文件到 OSS，预计 10-20 分钟内完成处理，届时会通过钉钉通知您。"
+            "message": f"成功上传 {len(uploaded_files)} 个文件到 OSS，预计 1分钟内完成处理，届时会通过钉钉通知您。"
         }
     )
 
@@ -482,6 +483,7 @@ async def download_results_page(person: str | None = None) -> str:
                 <option value="徐">徐</option>
                 <option value="章">章</option>
                 <option value="李">李</option>
+                <option value="姜">姜（备用）</option>
             </select>
         </div>
         <button type="submit">查看我的结果</button>
