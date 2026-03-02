@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Dict, Set, Tuple
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -231,7 +231,7 @@ def build_match_sets(
         if best_new_title is None or best_score < TITLE_SIM_THRESHOLD:
             continue
 
-        status = "matched" if old_total == best_new_total else "conflict"
+        status = "matched" if old_total >= best_new_total else "conflict"
         matches.append(
             {
                 "old_norm_title": old_title,
@@ -276,6 +276,43 @@ def build_match_sets(
     return matches_df, matched_titles, conflict_titles, new_only_titles
 
 
+def select_old_rows_by_quantity(
+    df_old: pd.DataFrame, title_to_quantity: Dict[str, float]
+) -> pd.DataFrame:
+    """
+    对每个匹配书名，从旧表中按序号（或行号）顺序选取行，直到学生数量合计 >= 新表数量，
+    返回这些行的并集。用于只输出“本次需要的数量”对应的班级行，而非该书名的全部行。
+    """
+    if not title_to_quantity:
+        return df_old.iloc[0:0].copy()
+
+    sort_col = "序号" if "序号" in df_old.columns else None
+    selected_parts = []
+
+    for norm_title, need_qty in title_to_quantity.items():
+        block = df_old[df_old["norm_title"] == norm_title].copy()
+        if block.empty:
+            continue
+        block["_orig_index"] = block.index
+        if sort_col is not None:
+            block = block.sort_values(by=[sort_col, "_orig_index"])
+        else:
+            block = block.sort_values(by="_orig_index")
+        block["_cumsum"] = block["学生数量"].cumsum()
+        # 取到累计 >= need_qty 为止的行（按顺序取前若干行）
+        if (block["_cumsum"] >= need_qty).any():
+            pos = (block["_cumsum"] >= need_qty).argmax()
+            taken = block.iloc[: pos + 1]
+        else:
+            taken = block
+        taken = taken.drop(columns=["_cumsum", "_orig_index"], errors="ignore")
+        selected_parts.append(taken)
+
+    if not selected_parts:
+        return df_old.iloc[0:0].copy()
+    return pd.concat(selected_parts, ignore_index=False)
+
+
 def build_newinfo_mapping(df_new: pd.DataFrame, matches_df: pd.DataFrame) -> pd.DataFrame:
     """
     为匹配成功的书名构建新表信息映射：
@@ -292,6 +329,7 @@ def build_newinfo_mapping(df_new: pd.DataFrame, matches_df: pd.DataFrame) -> pd.
                 "匹配相似度",
                 "新表标准化书名",
                 "_new_order",
+                "new_total_quantity",
             ]
         )
 
@@ -299,9 +337,9 @@ def build_newinfo_mapping(df_new: pd.DataFrame, matches_df: pd.DataFrame) -> pd.
     df_new_with_order = df_new.copy()
     df_new_with_order["_new_order"] = range(len(df_new_with_order))
 
-    # 将匹配结果映射回新表，取每个旧表书名对应的新表信息
+    # 将匹配结果映射回新表，取每个旧表书名对应的新表信息（含新表数量，供按数量选行用）
     subset = df_new_with_order.merge(
-        matches_df[["old_norm_title", "new_norm_title", "similarity"]],
+        matches_df[["old_norm_title", "new_norm_title", "similarity", "new_total_quantity"]],
         left_on="norm_title",
         right_on="new_norm_title",
         how="inner",
@@ -330,6 +368,7 @@ def build_newinfo_mapping(df_new: pd.DataFrame, matches_df: pd.DataFrame) -> pd.
             "匹配相似度",
             "新表标准化书名",
             "_new_order",
+            "new_total_quantity",
         ]
     ].copy()
 
@@ -479,10 +518,16 @@ def run_matching(
     print(f"数量不一致（冲突）书名数: {len(conflict_titles)}")
     print(f"仅出现在新表的书名数: {len(new_only_titles)}")
 
-    # 构建新表信息映射并生成匹配明细
+    # 构建新表信息映射（含新表数量），并按数量选取旧表子集
     mapping_df = build_newinfo_mapping(df_new, matches_df)
+    title_to_quantity: Dict[str, float] = {}
+    if not mapping_df.empty and "new_total_quantity" in mapping_df.columns:
+        title_to_quantity = dict(
+            zip(mapping_df["norm_title"], mapping_df["new_total_quantity"])
+        )
+    df_old_subset = select_old_rows_by_quantity(df_old, title_to_quantity)
     matched_details = apply_replacements(
-        df_old=df_old,
+        df_old=df_old_subset,
         mapping_df=mapping_df,
         matched_titles=matched_titles,
         original_columns=original_columns,
@@ -495,8 +540,8 @@ def run_matching(
         new_only_titles=new_only_titles,
     )
 
-    # 生成匹配原始表：保留旧表原始字段，只附加匹配元数据，方便对照统计
-    matched_original = df_old.copy()
+    # 生成匹配原始表：基于按数量选取的旧表子集，保留原始字段并附加匹配元数据
+    matched_original = df_old_subset.copy()
     matched_original["_old_order"] = matched_original.index
 
     matched_info = matches_df.loc[
