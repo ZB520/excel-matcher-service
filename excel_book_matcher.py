@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 from rapidfuzz import fuzz
@@ -276,18 +276,39 @@ def build_match_sets(
     return matches_df, matched_titles, conflict_titles, new_only_titles
 
 
+def _subset_sum_indices(quantities: List[float], target: float, tol: float = 0.01) -> List[int] | None:
+    """
+    从 quantities 中找出一组下标，使对应元素之和等于 target（允许误差 tol）。
+    若存在多组解，返回其中一组（递归优先取前部元素）。
+    """
+    n = len(quantities)
+    if n == 0:
+        return [] if abs(target) < tol else None
+    if abs(target) < tol:
+        return []
+
+    # 尝试包含第 0 项
+    r = _subset_sum_indices(quantities[1:], target - quantities[0], tol)
+    if r is not None:
+        return [0] + [i + 1 for i in r]
+    # 尝试不包含第 0 项（返回的索引是相对于 quantities[1:] 的，需 +1）
+    r = _subset_sum_indices(quantities[1:], target, tol)
+    return [i + 1 for i in r] if r is not None else None
+
+
 def select_old_rows_by_quantity(
     df_old: pd.DataFrame, title_to_quantity: Dict[str, float]
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Set[str]]:
     """
-    对每个匹配书名，从旧表中按序号（或行号）顺序选取行，直到学生数量合计 >= 新表数量，
-    返回这些行的并集。用于只输出“本次需要的数量”对应的班级行，而非该书名的全部行。
+    对每个匹配书名，从旧表中选取若干行，使这些行的“学生数量”之和**恰好等于**新表数量 N。
+    若找不到这样的子集则该书不计入匹配。返回（选中行的 DataFrame，成功找到精确和的书名集合）。
     """
     if not title_to_quantity:
-        return df_old.iloc[0:0].copy()
+        return df_old.iloc[0:0].copy(), set()
 
     sort_col = "序号" if "序号" in df_old.columns else None
-    selected_parts = []
+    selected_parts: List[pd.DataFrame] = []
+    succeeded_titles: Set[str] = set()
 
     for norm_title, need_qty in title_to_quantity.items():
         block = df_old[df_old["norm_title"] == norm_title].copy()
@@ -298,19 +319,16 @@ def select_old_rows_by_quantity(
             block = block.sort_values(by=[sort_col, "_orig_index"])
         else:
             block = block.sort_values(by="_orig_index")
-        block["_cumsum"] = block["学生数量"].cumsum()
-        # 取到累计 >= need_qty 为止的行（按顺序取前若干行）
-        if (block["_cumsum"] >= need_qty).any():
-            pos = (block["_cumsum"] >= need_qty).argmax()
-            taken = block.iloc[: pos + 1]
-        else:
-            taken = block
-        taken = taken.drop(columns=["_cumsum", "_orig_index"], errors="ignore")
-        selected_parts.append(taken)
+        quantities = block["学生数量"].astype(float).tolist()
+        indices = _subset_sum_indices(quantities, float(need_qty))
+        if indices is not None:
+            taken = block.iloc[indices].drop(columns=["_orig_index"], errors="ignore")
+            selected_parts.append(taken)
+            succeeded_titles.add(norm_title)
 
     if not selected_parts:
-        return df_old.iloc[0:0].copy()
-    return pd.concat(selected_parts, ignore_index=False)
+        return df_old.iloc[0:0].copy(), set()
+    return pd.concat(selected_parts, ignore_index=False), succeeded_titles
 
 
 def build_newinfo_mapping(df_new: pd.DataFrame, matches_df: pd.DataFrame) -> pd.DataFrame:
@@ -414,22 +432,29 @@ def apply_replacements(
 
 
 def build_unmatched_table(
-    df_new: pd.DataFrame, matches_df: pd.DataFrame, new_only_titles: Set[str]
+    df_new: pd.DataFrame,
+    matches_df: pd.DataFrame,
+    new_only_titles: Set[str],
+    succeeded_titles: Set[str] | None = None,
 ) -> pd.DataFrame:
-    """基于冲突书名和仅新表书名生成未匹配表，并增加状态列。"""
+    """基于冲突书名、无法凑出精确数量的书名和仅新表书名生成未匹配表，并增加状态列。"""
     unmatched_new_titles: Set[str] = set(new_only_titles)
+    status_map: Dict[str, str] = {}
 
-    status_map = {}
     if not matches_df.empty:
         conflict_new_titles = set(
             matches_df.loc[matches_df["status"] == "conflict", "new_norm_title"]
         )
         unmatched_new_titles |= conflict_new_titles
-        status_map = {
-            row["new_norm_title"]: row["status"]
-            for _, row in matches_df.iterrows()
-            if row["status"] == "conflict"
-        }
+        for _, row in matches_df.iterrows():
+            if row["status"] == "conflict":
+                status_map[row["new_norm_title"]] = row["status"]
+        # 书名匹配但无法从旧表行中凑出“和恰好等于新表数量”的，也视为数量冲突
+        if succeeded_titles is not None:
+            for _, row in matches_df.iterrows():
+                if row["status"] == "matched" and row["old_norm_title"] not in succeeded_titles:
+                    unmatched_new_titles.add(row["new_norm_title"])
+                    status_map[row["new_norm_title"]] = "conflict"
 
     unmatched = df_new[df_new["norm_title"].isin(unmatched_new_titles)].copy()
 
@@ -525,19 +550,20 @@ def run_matching(
         title_to_quantity = dict(
             zip(mapping_df["norm_title"], mapping_df["new_total_quantity"])
         )
-    df_old_subset = select_old_rows_by_quantity(df_old, title_to_quantity)
+    df_old_subset, succeeded_titles = select_old_rows_by_quantity(df_old, title_to_quantity)
     matched_details = apply_replacements(
         df_old=df_old_subset,
         mapping_df=mapping_df,
-        matched_titles=matched_titles,
+        matched_titles=succeeded_titles,
         original_columns=original_columns,
     )
 
-    # 生成未匹配表（包含数量冲突和仅新表）
+    # 生成未匹配表（包含数量冲突、无法凑出精确数量的书名、仅新表）
     unmatched_items = build_unmatched_table(
         df_new=df_new,
         matches_df=matches_df,
         new_only_titles=new_only_titles,
+        succeeded_titles=succeeded_titles,
     )
 
     # 生成匹配原始表：基于按数量选取的旧表子集，保留原始字段并附加匹配元数据
@@ -545,7 +571,7 @@ def run_matching(
     matched_original["_old_order"] = matched_original.index
 
     matched_info = matches_df.loc[
-        matches_df["status"] == "matched",
+        (matches_df["status"] == "matched") & (matches_df["old_norm_title"].isin(succeeded_titles)),
         [
             "old_norm_title",
             "new_norm_title",
